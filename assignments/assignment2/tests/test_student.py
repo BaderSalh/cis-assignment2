@@ -192,7 +192,33 @@ def test_improved_inv_kins_round_trip():
 
 
 def test_fit_recovers_synthetic_parameters():
-    
+    def generate_theta(seed:int):
+        rng = np.random.default_rng(seed)
+        return random_theta(rng)
+    F_tracker_approx = Frame(Rot(), vct3())
+    F_rob_approx = Frame(Rot(),vct3(-800,0,1400))
+    mbee_local_positions = [
+    vct3(75,0,0),
+    vct3(-75,0,0),
+    vct3(0,0,75),
+    vct3(0,0,-75)]
+    test_rob = simulation.create_robot("test_rob", F_rob_approx, seed=1)
+    reference_model = kinematics.ImprovedKinematics(test_rob, F_rob_approx)
+    data = workflow.CalibrationData()
+    reference_model.params[6] = 0.005
+    for i in range(0,30):
+        theta =generate_theta(i)
+        data.thetas.append(theta.copy())
+        data.frames.append(reference_model.predict_in_tracker(theta))
+    fitted_model = kinematics.ImprovedKinematics(test_rob, F_rob_approx)
+    fitted_model.fit(data)
+    for i in range(30, 40):
+        theta = generate_theta(i)
+        expected_pose=reference_model.predict_in_tracker(theta)
+        predicted_pose=fitted_model.predict_in_tracker(theta)
+        angular_error, position_error = metrics.frame_error(expected_pose, predicted_pose)
+        assert np.isclose(position_error,0.0, atol=1e-3)
+        assert np.isclose(angular_error,0.0, atol=1e-6)
     """TODO: write this test.
 
     Hint: generate CalibrationData from your own model with a known,
@@ -201,4 +227,3 @@ def test_fit_recovers_synthetic_parameters():
     the parameters themselves need not match if your model has a null
     direction -- compare poses, not parameters.
     """
-    pytest.skip("TODO")
