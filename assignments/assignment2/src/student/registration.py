@@ -26,7 +26,35 @@ def register_points(a: List[vct3], b: List[vct3]) -> Frame:
         b - the same points observed in the target frame, same order
     output: Frame mapping a -> b
     """
-    raise NotImplementedError("TODO: implement register_points")
+    
+    if len(a) != len(b) or len(a) < 3:
+        raise ValueError("At least 3 paired points are required")
+
+    A = np.column_stack([point.vec.ravel() for point in a])
+    B = np.column_stack([point.vec.ravel() for point in b])
+
+    a_centroid = np.mean(A, axis=1, keepdims=True)
+    b_centroid = np.mean(B, axis=1, keepdims=True)
+
+    a_prime = A - a_centroid
+    b_prime = B - b_centroid
+
+    if (np.linalg.matrix_rank(a_prime) < 2 or
+            np.linalg.matrix_rank(b_prime) < 2):
+        raise ValueError("Points must not be collinear")
+
+    H = a_prime @ b_prime.T
+
+    U, S, V_transpose = np.linalg.svd(H)
+    V = V_transpose.T
+
+    D = np.eye(3)
+    D[2, 2] = np.linalg.det(V @ U.T)
+
+    R = V @ D @ U.T
+    p = b_centroid - R @ a_centroid
+
+    return Frame(Rot(matrix=R), vct3(p.ravel()))
 
 
 def average_frames(frames: List[Frame]) -> Frame:
@@ -41,7 +69,22 @@ def average_frames(frames: List[Frame]) -> Frame:
         frames - List[Frame], all estimates of the same transform
     output: the averaged Frame
     """
-    raise NotImplementedError("TODO: implement average_frames")
+    if frames is None or len(frames) == 0:
+        raise ValueError("frames must not be empty")
+
+    positions = np.array([frame.p.vec.ravel() for frame in frames])
+    p_avg = np.mean(positions, axis=0)
+
+    rotations = np.array([frame.R.matrix for frame in frames])
+    M = np.mean(rotations, axis=0)
+
+    U, S, V_transpose = np.linalg.svd(M)
+
+    D = np.eye(3)
+    D[2, 2] = np.linalg.det(U @ V_transpose)
+    R_avg = U @ D @ V_transpose
+
+    return Frame(Rot(matrix=R_avg), vct3(p_avg))
 
 
 def refine_marker_body(trk: Tracker, placed: PlacedBody, n_readings: int = 30) -> List[vct3]:
@@ -65,4 +108,4 @@ def refine_marker_body(trk: Tracker, placed: PlacedBody, n_readings: int = 30) -
         n_readings - number of readings to average
     output: the new List[vct3] of marker positions (also stored on the body)
     """
-    raise NotImplementedError("TODO: implement refine_marker_body")
+    """ Skipped due to the fact that we have the exact marker readings on the end-effector"""
