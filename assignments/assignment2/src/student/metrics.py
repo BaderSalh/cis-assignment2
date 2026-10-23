@@ -3,7 +3,7 @@ Pose-error metrics used to report calibration accuracy.
 """
 
 from typing import Dict, Sequence, Tuple
-
+from uncertainty_networks.se3 import log_so3
 import numpy as np
 
 from data_types.nominal_types import Frame
