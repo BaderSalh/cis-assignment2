@@ -111,7 +111,7 @@ def refine_marker_body(trk: Tracker, placed: PlacedBody, n_readings: int = 30) -
         n_readings - number of readings to average
     output: the new List[vct3] of marker positions (also stored on the body)
     """
-    """ Skipped due to the fact that we have the exact marker readings on the end-effector"""    if n_readings <= 0:
+    if n_readings <= 0:
         raise ValueError("n_readings must be positive")
 
     body = placed.body
