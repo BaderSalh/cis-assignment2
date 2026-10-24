@@ -12,7 +12,8 @@ from data_types.nominal_types import vct3, Frame
 
 from ..robot import Robot
 from assignments.assignment1.src.tracker import Tracker
-from ..simulation import PlacedBody
+from ..simulation import PlacedBody, clock, sample_marker_bodies,most_recent_observed_frame
+
 from .registration import average_frames
 
 
@@ -106,7 +107,7 @@ def plan_calibration_poses(
     # angular_step: The maximum sampling interval of the rotating joint, rad
     # repeats: The number of repeated executions and samplings of each configuration
 
-    reference = np.sarray(
+    reference = np.asarray(
         kwargs.get("reference",np.zeros(6)),
         dtype = float,
     ).reshape(6)
@@ -202,7 +203,7 @@ def collect_calibration_data(rob: Robot, trk: Tracker, mbee_placed: PlacedBody,
         repeats - readings per pose
     output: CalibrationData
     """
-    if repeat < 1:
+    if repeats < 1:
         raise ValueError("repeats must be at least 1")
 
     data = CalibrationData()
@@ -210,7 +211,7 @@ def collect_calibration_data(rob: Robot, trk: Tracker, mbee_placed: PlacedBody,
     for theta in thetas:
         theta = np.asarray(theta, dtype=float).reshape(6)
         rob.move_joints(theta)
-        for _ in repeats:
+        for _ in range(repeats):
             sample_marker_bodies(trk)
             F_observed = most_recent_observed_frame(mbee_placed.body)
 
