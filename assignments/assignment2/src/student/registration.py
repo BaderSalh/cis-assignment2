@@ -10,8 +10,11 @@ import numpy as np
 from data_types.nominal_types import vct3, Rot, Frame
 
 from assignments.assignment1.src.tracker import Tracker
-from ..simulation import PlacedBody
-
+from ..simulation import (
+    sample_marker_bodies,
+    most_recent_observed_markers,
+    update_marker_body,
+)
 
 def register_points(a: List[vct3], b: List[vct3]) -> Frame:
     """
@@ -108,4 +111,38 @@ def refine_marker_body(trk: Tracker, placed: PlacedBody, n_readings: int = 30) -
         n_readings - number of readings to average
     output: the new List[vct3] of marker positions (also stored on the body)
     """
-    """ Skipped due to the fact that we have the exact marker readings on the end-effector"""
+    """ Skipped due to the fact that we have the exact marker readings on the end-effector"""    if n_readings <= 0:
+        raise ValueError("n_readings must be positive")
+
+    body = placed.body
+    nominal_positions = body.nominal_marker_positions
+    local_readings = []
+
+    for _ in range(n_readings):
+        sample_marker_bodies(trk)
+
+        observed = most_recent_observed_markers(body)
+        if observed is None:
+            raise ValueError("Marker body is not visible")
+
+        observed_positions = [marker.p for marker in observed]
+
+        F = register_points(nominal_positions, observed_positions)
+
+        F_inv = F.inv()
+        local_points = [
+            (F_inv * point).vec.ravel()
+            for point in observed_positions
+        ]
+        local_readings.append(local_points)
+
+    mean_positions = np.mean(
+        np.asarray(local_readings, dtype=float),
+        axis=0,
+    )
+
+    refined_positions = [vct3(point) for point in mean_positions]
+
+    update_marker_body(body, refined_positions)
+
+    return refined_positions
