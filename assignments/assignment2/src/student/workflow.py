@@ -13,6 +13,7 @@ from data_types.nominal_types import vct3, Frame
 from ..robot import Robot
 from assignments.assignment1.src.tracker import Tracker
 from ..simulation import PlacedBody
+from .registration import average_frames
 
 
 @dataclass
@@ -46,11 +47,25 @@ def measure_home_offsets(rob: Robot, n_homings: int = 5) -> np.ndarray:
         n_homings - how many homings to average
     output: estimated delta_theta_sys at home, np.ndarray of 6
     """
-    raise NotImplementedError("TODO: implement measure_home_offsets")
+    if n_homings <= 0:
+        raise ValueError("n_homings must be positive")
+
+    readings = []
+
+    for _ in range(n_homings):
+        encoders = rob.home_robot()
+        readings.append(np.asarray(encoders, dtype=float).copy())
+    return -np.mean(readings, axis = 0)
 
 
 # this should contain a desired accuracy which will affect the number of calibration poses
-def plan_calibration_poses(rob: Robot, trk: Tracker, mbee_local_positions: List[vct3], desired_accuracy: float, **kwargs) -> List[np.ndarray]:
+def plan_calibration_poses(
+    rob: Robot, 
+    trk: Tracker, 
+    mbee_local_positions: List[vct3], 
+    desired_accuracy: float, 
+    **kwargs
+) -> List[np.ndarray]:
     """
     TODO: implement -- this is a design task.
 
@@ -80,7 +95,93 @@ def plan_calibration_poses(rob: Robot, trk: Tracker, mbee_local_positions: List[
         kwargs - whatever your design needs (grid sizes, margins, ...)
     output: ordered List of joint vectors (np.ndarray of 6)
     """
-    raise NotImplementedError("TODO: implement plan_calibration_poses")
+    if not np.isfinite(desired_accuracy) or desired_accuracy <= 0:
+        raise ValueError("desired_accuracy must be positive and finite")
+
+    if len(mbee_local_positions) < 3:
+        raise ValueError("At least 3 calibration markers are required")
+
+    # reference: Encoder values maintained by other joints when scanning
+    # linear_step: The maximum sampling interval of the translation joint, mm
+    # angular_step: The maximum sampling interval of the rotating joint, rad
+    # repeats: The number of repeated executions and samplings of each configuration
+
+    reference = np.sarray(
+        kwargs.get("reference",np.zeros(6)),
+        dtype = float,
+    ).reshape(6)
+
+    accuracy_ratio = min(1.0, desired_accuracy / 1e-3)
+
+    linear_step = float(
+        kwargs.get("linear_step", 100.0 * accuracy_ratio)
+    )
+    angular_step = float(
+        kwargs.get("angular_step", 0.5 * accuracy_ratio)
+    )
+    repeats = kwargs.get("repeats", 3)
+
+    if (not np.isfinite(linear_step) or linear_step <= 0 or
+            not np.isfinite(angular_step) or angular_step <= 0):
+        raise ValueError("Sampling steps must be positive and finite")
+
+    if not isinstance(repeats, (int, np.integer)) or repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+
+    poses = []
+
+    def append_pose(theta):
+        theta = np.asarray(theta, dtype=float).reshape(6)
+
+        if not np.all(np.isfinite(theta)):
+            raise ValueError("Joint values must be finite")
+
+        if not rob.within_limits(theta):
+            raise ValueError(f"Joint limits violated: {theta}")
+
+        # Calibration body system -> robot base system -> workspace system
+        F_world = rob.F_rob * rob.fwd_kins(theta)
+        marker_points_world = [
+            F_world * point
+            for point in mbee_local_positions
+        ]
+
+        if not trk.is_visible(marker_points_world):
+            raise ValueError(
+                f"Calibration markers are not visible at theta={theta}"
+            )
+
+        if poses and np.allclose(
+            poses[-1], theta, rtol=0.0, atol=1e-12
+        ):
+            return
+
+        for _ in range(repeats):
+            poses.append(theta.copy())
+
+    append_pose(reference)
+
+    for joint in range(6):
+        lower = float(rob.theta_min[joint])
+        upper = float(rob.theta_max[joint])
+
+        step = linear_step if joint < 3 else angular_step
+        n_intervals = max(1, int(np.ceil((upper - lower) / step)))
+
+        values = np.linspace(lower, upper, n_intervals + 1)
+
+        if abs(reference[joint] - upper) < abs(reference[joint] - lower):
+            values = values[::-1]
+
+        for value in values:
+            theta = reference.copy()
+            theta[joint] = value
+            append_pose(theta)
+
+        append_pose(reference)
+
+    return poses
+    
 
 
 def collect_calibration_data(rob: Robot, trk: Tracker, mbee_placed: PlacedBody,
@@ -101,8 +202,26 @@ def collect_calibration_data(rob: Robot, trk: Tracker, mbee_placed: PlacedBody,
         repeats - readings per pose
     output: CalibrationData
     """
-    raise NotImplementedError("TODO: implement collect_calibration_data")
+    if repeat < 1:
+        raise ValueError("repeats must be at least 1")
 
+    data = CalibrationData()
+    t_start = clock.elapsed
+    for theta in thetas:
+        theta = np.asarray(theta, dtype=float).reshape(6)
+        rob.move_joints(theta)
+        for _ in repeats:
+            sample_marker_bodies(trk)
+            F_observed = most_recent_observed_frame(mbee_placed.body)
+
+            if F_observed is None:
+                raise ValueError(f"Calibration body is not visible at theta={theta}")
+            data.thetas.append(theta.copy())
+            data.frames.append(F_observed)
+
+    data.t_collect = clock.elapsed - t_start
+    return data
+            
 
 def estimate_base_frame(data: CalibrationData, kins: Robot) -> Frame:
     """
@@ -119,4 +238,18 @@ def estimate_base_frame(data: CalibrationData, kins: Robot) -> Frame:
             ImprovedKinematics)
     output: F_X
     """
-    raise NotImplementedError("TODO: implement estimate_base_frame")
+    if len(data) == 0:
+        raise ValueError("Calibration data must not be empty")
+
+    if len(data.thetas) != len(data.frames):
+        raise ValueError("Joint vectors and observed frames must match")
+
+    base_estimates = []
+
+    for theta, F_observed in zip(data.thetas, data.frames):
+        F_ee = kins.fwd_kins(theta)
+
+        F_X = F_observed * F_ee.inv()
+        base_estimates.append(F_X)
+
+    return average_frames(base_estimates)
