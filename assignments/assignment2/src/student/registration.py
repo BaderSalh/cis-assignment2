@@ -125,7 +125,7 @@ def refine_marker_body(trk: Tracker, placed: PlacedBody, n_readings: int = 30) -
         if observed is None:
             raise ValueError("Marker body is not visible")
 
-        observed_positions = [marker.p for marker in observed]
+        observed_positions = observed
 
         F = register_points(nominal_positions, observed_positions)
 

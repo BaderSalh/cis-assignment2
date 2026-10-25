@@ -6,6 +6,8 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from scipy.optimize import least_squares
+from uncertainty_networks.se3 import exp_so3, exp_se3, log_so3
 from data_types.nominal_types import vct3, Rot, Frame
 from uncertainty_networks.se3 import log_so3
 
@@ -14,6 +16,7 @@ from .workflow import CalibrationData
 
 
 class ImprovedKinematics(Robot):
+    
     """
     TODO: implement -- the core deliverable.
 
@@ -52,6 +55,7 @@ class ImprovedKinematics(Robot):
     # ------------------------------------------------------------------ parameterization
 
     def initial_params(self) -> np.ndarray:
+        return np.zeros(6 + 10 + 6 + 6 * self.n_poly)
         """
         TODO: implement.
 
@@ -60,9 +64,13 @@ class ImprovedKinematics(Robot):
                 layout in the class docstring that is simply
                 np.zeros(6 + 10 + 6 + 6 * self.n_poly)
         """
-        raise NotImplementedError("TODO: implement initial_params")
 
     def base_frame(self, params: Optional[np.ndarray] = None) -> Frame:
+        if params is None:
+            params = self.params
+
+        correction = Frame(exp_se3(params[0:6]))
+        return self.F_X_init * correction
         """
         TODO: implement.
 
@@ -70,11 +78,36 @@ class ImprovedKinematics(Robot):
                 self.params) -- e.g. F_X_init * Exp(params[0:6]), see
                 uFrame.perturb / uncertainty_networks.se3.exp_se3
         """
-        raise NotImplementedError("TODO: implement base_frame")
 
     # ------------------------------------------------------------------ kinematics
 
     def fwd_kins(self, theta, params: Optional[np.ndarray] = None) -> Frame:
+        if params is None:
+            params = self.params
+        theta = np.asarray(theta, dtype=float).reshape(6)
+        q = theta + self.joint_offsets
+        scales = np.maximum(abs(self.theta_min), abs(self.theta_max))
+        coefficients = params[22:].reshape(6, self.n_poly)
+        for k in range(6):
+            for j in range(self.n_poly):
+                q[k] += coefficients[k, j] * (theta[k] / scales[k]) ** (j + 1)
+        axes = np.array([axis.vec.ravel() for axis in self.AXES])
+        for k in range(1, 6):
+            start = 6 + 2 * (k - 1)
+            phi = np.zeros(3)
+            phi[axes[k] == 0] = params[start:start + 2]
+            axes[k] = exp_so3(phi) @ axes[k]
+        position = np.zeros(3)
+        for k in range(3):
+            position += q[k] * axes[k]
+        F_c = Frame(Rot(), vct3(position))
+        F_cw = self.F_CW
+        rotation = Rot()
+        for k in range(3, 6):
+            rotation = rotation * Rot(vct3(axes[k]), float(q[k]))
+        F_w = Frame(rotation, vct3())
+        F_we = self.F_WE * Frame(exp_se3(params[16:22]))
+        return F_c * F_cw * F_w * F_we
         """
         ImprovedFwdKins(theta).
 
@@ -85,7 +118,6 @@ class ImprovedKinematics(Robot):
                 error model (joint offsets + distortion, tilted axes, tool
                 frame offset) applied
         """
-        raise NotImplementedError("TODO: implement ImprovedKinematics.fwd_kins")
 
     def predict_in_tracker(self, theta, params: Optional[np.ndarray] = None) -> Frame:
         """The end-effector pose in the tracker frame: base_frame * fwd_kins."""
@@ -149,6 +181,15 @@ class ImprovedKinematics(Robot):
     # ------------------------------------------------------------------ fitting
 
     def residuals(self, params: np.ndarray, data: CalibrationData) -> np.ndarray:
+        errors = []
+        for theta, observed in zip(data.thetas, data.frames):
+            predicted = self.predict_in_tracker(theta, params)
+            difference = observed.inv() * predicted
+            rotation_error = log_so3(difference.R.matrix)
+            position_error = difference.p.vec.ravel()
+            errors.extend(rotation_error / 1e-3)
+            errors.extend(position_error / 0.2)
+        return np.asarray(errors, dtype=float)
         """
         TODO: implement.
 
@@ -157,9 +198,11 @@ class ImprovedKinematics(Robot):
                 params) with data.frames[j] for every sample (choose how to
                 weigh rotation vs translation)
         """
-        raise NotImplementedError("TODO: implement residuals")
 
     def fit(self, data: CalibrationData, **kwargs):
+        result = least_squares(self.residuals, self.params, args=(data,), **kwargs)
+        self.params = result.x.copy()
+        return {"success": result.success, "cost": result.cost, "nfev": result.nfev, "message": result.message}
         """
         TODO: implement.
 
@@ -167,9 +210,28 @@ class ImprovedKinematics(Robot):
         allowed). Must set self.params. Return whatever diagnostics you want
         to report (final cost, iterations, ...).
         """
-        raise NotImplementedError("TODO: implement fit")
 
     def jacobian_rank_report(self, data: CalibrationData, params: Optional[np.ndarray] = None) -> dict:
+        if params is None:
+            params = self.params
+        params = np.asarray(params, dtype=float).copy()
+        residuals = self.residuals(params, data)
+        if residuals.size == 0:
+            raise ValueError("Calibration data is empty")
+        n_params = len(params)
+        J = np.zeros((len(residuals), n_params))
+        for k in range(n_params):
+            step = 1e-6 * max(1.0, abs(params[k]))
+            above = params.copy()
+            below = params.copy()
+            above[k] += step
+            below[k] -= step
+            J[:, k] = (self.residuals(above, data)-self.residuals(below, data)) / (2 * step)
+        full = J.shape[0] < J.shape[1]
+        U, singular_values, Vt = np.linalg.svd(J, full_matrices=full)
+        tolerance = singular_values[0] * 1e-6
+        rank = int(np.sum(singular_values > tolerance))
+        return {"rank": rank, "n_params": n_params, "singular_values": singular_values, "tolerance": tolerance, "weak_directions": Vt[rank:]}
         """
         TODO: implement.
 
@@ -178,11 +240,29 @@ class ImprovedKinematics(Robot):
         determined). Use it to justify your parameterization and your
         choice of calibration poses in the report.
         """
-        raise NotImplementedError("TODO: implement jacobian_rank_report")
 
     # ------------------------------------------------------------------ reporting
 
     def parameters_report(self) -> Dict[str, np.ndarray]:
+        axes = np.array([axis.vec.ravel() for axis in self.AXES])
+        tilts = np.zeros((6, 3))
+        for k in range(1, 6):
+            start = 6 + 2 * (k - 1)
+            tilts[k, axes[k] == 0] = self.params[start:start + 2]
+            axes[k] = exp_so3(tilts[k]) @ axes[k]
+        angles = np.zeros((6, 6))
+        for i in range(6):
+            for j in range(6):
+                cosine = np.clip(np.dot(axes[i], axes[j]), -1.0, 1.0)
+                angles[i, j] = np.degrees(np.arccos(cosine))
+        scales = np.maximum(abs(self.theta_min), abs(self.theta_max))
+        coefficients = self.params[22:].reshape(6, self.n_poly)
+        joint_scale = np.zeros(6)
+        if self.n_poly > 0:
+            joint_scale = coefficients[:, 0] / scales
+        tool_correction = Frame(exp_se3(self.params[16:22]))
+        return {"axes": axes, "axis_tilts": tilts, "axis_angles_deg": angles, "joint_offset": self.joint_offsets.copy(), "joint_scale": joint_scale, "joint_scale_factors": 1.0 + joint_scale, "distortion_coefficients": coefficients.copy(), "F_we_twist": self.params[16:22].copy(), "tool_translation_mm": tool_correction.p.vec.ravel().copy(), "tool_rotation_rad": log_so3(tool_correction.R.matrix)
+    }
         """
         TODO: implement.
 
@@ -194,4 +274,3 @@ class ImprovedKinematics(Robot):
         tool-frame offset. Note which of these are only defined up to the
         base-frame gauge (and so are better compared as angles between axes).
         """
-        raise NotImplementedError("TODO: implement parameters_report")
