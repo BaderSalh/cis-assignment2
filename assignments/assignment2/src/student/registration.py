@@ -11,6 +11,7 @@ from data_types.nominal_types import vct3, Rot, Frame
 
 from assignments.assignment1.src.tracker import Tracker
 from ..simulation import (
+    PlacedBody,
     sample_marker_bodies,
     most_recent_observed_markers,
     update_marker_body,
