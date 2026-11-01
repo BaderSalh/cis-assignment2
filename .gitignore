@@ -23,6 +23,8 @@ Thumbs.db
 *.png
 *.csv
 *.pdf
+*.zip
+*.rar
 
 ## Python ignores
 # Python build folder
